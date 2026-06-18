@@ -17,7 +17,7 @@ class MultiQueryAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, self.head_dim, bias=False)
         self.v_proj = nn.Linear(embed_dim, self.head_dim, bias=False)
 
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.attn_drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
@@ -50,6 +50,6 @@ class MultiQueryAttention(nn.Module):
         # output: [batch_size, num_heads, seq_len, haed_dim]
         output = attn @ v
         output = output.transpose(1, 2).reshape(batch_size, seq_len, self.embed_dim)
-        output = self.out_proj(output)
+        output = self.o_proj(output)
 
         return output

@@ -16,7 +16,7 @@ class MultiHeadMaskedSelfAttention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
         self.attn_drop = nn.Dropout(dropout)
 
@@ -51,6 +51,6 @@ class MultiHeadMaskedSelfAttention(nn.Module):
 
         output = attn @ v  # [batch_size, num_heads, seq_len, head_dim]
         output = output.transpose(1, 2).reshape(batch_size, seq_len, self.embed_dim)
-        output = self.out_proj(output)
+        output = self.o_proj(output)
 
         return output

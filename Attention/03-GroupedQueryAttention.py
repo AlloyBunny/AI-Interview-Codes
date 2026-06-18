@@ -36,7 +36,7 @@ class GroupedQueryAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, num_kv_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(embed_dim, num_kv_heads * self.head_dim, bias=False)
 
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.attn_drop = nn.Dropout(dropout)
 
     def forward(
@@ -109,6 +109,6 @@ class GroupedQueryAttention(nn.Module):
         # output: [batch_size, num_heads, seq_len, head_dim]
         output = attn @ v
         output = output.transpose(1, 2).reshape(batch_size, seq_len, self.embed_dim)
-        output = self.out_proj(output)
+        output = self.o_proj(output)
 
         return output, past_kv
