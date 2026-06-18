@@ -3,7 +3,7 @@ import torch.nn as nn
 import math
 
 """
-04-SelfAttention
+SelfAttention
 实现一个SelfAttention层，输入是[B, L, d_model]，输出是[B, L, d_model]，其中B是Batch Size，L是Sequence Length，d_model是Embedding Dimension。
 其中，SelfAttention的公式为：
 Q = x @ W_q
@@ -13,6 +13,9 @@ V = x @ W_v
 scores = Q @ K.T / sqrt(d_k)
 attn = softmax(scores)
 output = attn @ V
+注：
+1. 这里实现的是Encoder self-attention，没有causal mask
+2. d_k和d_v一般是相等的；在MHA里，一般n*d_k=d_model（n是头数）
 """
 
 class SelfAttention(nn.Module):
