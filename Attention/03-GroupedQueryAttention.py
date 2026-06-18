@@ -1,130 +1,114 @@
-import torch
-import torch.nn as nn
 import math
 from typing import Optional, Tuple
+
+import torch
+import torch.nn as nn
 
 
 def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
     """
-    x: [B, H, L, head_dim]
-    cos/sin: [L, head_dim // 2]
+    x: [batch_size, num_heads, seq_len, head_dim]
+    cos/sin: [seq_len, head_dim // 2]
     """
     x1 = x[..., 0::2]
     x2 = x[..., 1::2]
 
     out = torch.empty_like(x)
-
     out[..., 0::2] = x1 * cos - x2 * sin
     out[..., 1::2] = x1 * sin + x2 * cos
 
     return out
 
 class GroupedQueryAttention(nn.Module):
-    def __init__(self, d_model, num_heads, num_kv_heads, dropout=0.1):
+    def __init__(self, embed_dim, num_heads, num_kv_heads, dropout=0.1):
         super().__init__()
-        assert d_model % num_heads == 0, "d_model 必须能被 num_heads 整除"
+        assert embed_dim % num_heads == 0, "embed_dim 必须能被 num_heads 整除"
         assert num_heads % num_kv_heads == 0, "num_heads 必须能被 num_kv_heads 整除"
 
-        self.d_model = d_model
+        self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
-        self.head_dim = d_model // num_heads
+        self.head_dim = embed_dim // num_heads
         self.num_groups = num_heads // num_kv_heads
         assert self.head_dim % 2 == 0, "RoPE 要求 head_dim 必须是偶数"
 
-        # Q 仍然有 num_heads 个头
-        self.W_q = nn.Linear(d_model, d_model, bias=False)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_proj = nn.Linear(embed_dim, num_kv_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dim, num_kv_heads * self.head_dim, bias=False)
 
-        # K/V 只有 num_kv_heads 个头，所以输出维度更小
-        self.W_k = nn.Linear(d_model, num_kv_heads * self.head_dim, bias=False)
-        self.W_v = nn.Linear(d_model, num_kv_heads * self.head_dim, bias=False)
-
-        # 输出投影：用于融合多头信息
-        self.W_o = nn.Linear(d_model, d_model, bias=False)
-
-        # attention dropout（防止注意力过拟合）
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.attn_drop = nn.Dropout(dropout)
 
     def forward(
-            self, x: torch.Tensor, position_embedding: Tuple[torch.Tensor, torch.Tensor],
-            past_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, use_cache: bool = False,
-            attn_mask: Optional[torch.Tensor] = None
-        ):
+        self,
+        x: torch.Tensor,
+        position_embedding: Tuple[torch.Tensor, torch.Tensor],
+        past_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+        attn_mask: Optional[torch.Tensor] = None,
+    ):
         """
-        x: [B, L, d_model]
+        x: [batch_size, seq_len, embed_dim]
         position_embedding: Tuple[cos, sin]
             - cos/sin: [max_len, head_dim // 2]
-            - 这里默认传入完整 RoPE 表，然后在 forward 里根据 past_len 切片
-        past_kv: Optional[Tuple[K, V]]
-            - K/V: [B, H_kv, past_len, head_dim]
-            - 是KV Cache
-        use_cache: bool
-            - 表示这次forward是否记录并返回 KV cache
-        attn_mask: [B, total_len]
+        past_kv: Optional[Tuple[k, v]]
+            - k/v: [batch_size, num_kv_heads, past_len, head_dim]
+        use_cache:
+            - 是否返回新的 KV cache
+        attn_mask: [batch_size, total_len]
             - 1 表示有效 token
             - 0 表示 padding token
         """
-        B, L, D = x.shape
+        batch_size, seq_len, embed_dim = x.shape
+        assert embed_dim == self.embed_dim, "x.size(-1) 必须等于 embed_dim"
 
-        # 1) QKV 线性映射
-        Q = self.W_q(x)
-        K = self.W_k(x)
-        V = self.W_v(x)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
 
-        # 2) 拆分 query heads
-        # Q: [B, L, D] -> [B, L, H, D] -> [B, H, L, D]
-        Q = Q.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        # q: [batch_size, seq_len, embed_dim]
+        # -> [batch_size, seq_len, num_heads, head_dim]
+        # -> [batch_size, num_heads, seq_len, head_dim]
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # 3) 拆分 key/value heads
-        # K/V: [B, L, H_kv * D] -> [B, L, H_kv, D] -> [B, H_kv, L, D]
-        K = K.view(B, L, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        V = V.view(B, L, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        # k/v: [batch_size, seq_len, num_kv_heads * head_dim]
+        # -> [batch_size, seq_len, num_kv_heads, head_dim]
+        # -> [batch_size, num_kv_heads, seq_len, head_dim]
+        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # 4) 对Q/K使用RoPE位置编码
-        # 有 KV cache 时，当前 token 的位置不是从 0 开始，而是从 past_len 开始
         past_len = 0 if past_kv is None else past_kv[0].size(2)
         cos, sin = position_embedding
-        cos = cos[past_len:past_len + L]
-        sin = sin[past_len:past_len + L]
-        Q = apply_rope(Q, cos, sin)
-        K = apply_rope(K, cos, sin)
+        cos = cos[past_len:past_len + seq_len]
+        sin = sin[past_len:past_len + seq_len]
+        q = apply_rope(q, cos, sin)
+        k = apply_rope(k, cos, sin)
 
         if past_kv is not None:
-            K = torch.cat([past_kv[0], K], dim=2)  # 在序列长度维度上拼接，此后K.size(2)就是total_len
-            V = torch.cat([past_kv[1], V], dim=2)
-        past_kv = (K, V) if use_cache else None
+            # k/v: [batch_size, num_kv_heads, seq_len, head_dim]
+            #   -> [batch_size, num_kv_heads, total_len, head_dim] (其中total_len = past_len + seq_len)
+            k = torch.cat([past_kv[0], k], dim=2)
+            v = torch.cat([past_kv[1], v], dim=2)
+        past_kv = (k, v) if use_cache else None
 
-        # 5) 将每个 K/V head 复制给同一组里的多个 Q head
-        # [B, H_kv, total_len, D] -> [B, H, total_len, D]
-        # 相当于 K = K[:, :, None, :, :].expand(B, H_kv, G, total_len, D).reshape(B, H, total_len, D)
-        K = K.repeat_interleave(self.num_groups, dim=1)
-        V = V.repeat_interleave(self.num_groups, dim=1)
+        # 每个 k/v head 复制给同一组里的多个 q head。
+        # [batch_size, num_kv_heads, total_len, head_dim]
+        # -> [batch_size, num_heads, total_len, head_dim]
+        k = k.repeat_interleave(self.num_groups, dim=1)
+        v = v.repeat_interleave(self.num_groups, dim=1)
 
-        # 6) scaled dot-product attention
-        # 为什么要除 sqrt(d_k)：防止 dot product 随维度变大导致 softmax 饱和
-        # scores: [B, H, L, total_len]
-        scores = (Q @ K.transpose(-1, -2)) / math.sqrt(self.head_dim)
+        # scores: [batch_size, num_heads, seq_len, total_len]
+        scores = q @ k.transpose(-1, -2) / math.sqrt(self.head_dim)
 
-        # 7) attention mask
         if attn_mask is not None:
-            scores = scores.masked_fill(
-                attn_mask[:, None, None, :] == 0,
-                float("-inf")
-            )
+            scores = scores.masked_fill(attn_mask[:, None, None, :] == 0, float("-inf"))
 
-        # 8) softmax 得到 attention 权重
         attn = torch.softmax(scores, dim=-1)
-
-        # 9) attention dropout（Transformer 标配正则化）
         attn = self.attn_drop(attn)
 
-        # 10) 加权求和
-        output = attn @ V  # [B, H, L, D]
-
-        # 11) 多头拼接
-        output = output.transpose(1, 2).contiguous().view(B, L, self.d_model)
-
-        # 12) 输出投影（融合 multi-head 信息）
-        output = self.W_o(output)
+        # output: [batch_size, num_heads, seq_len, head_dim]
+        output = attn @ v
+        output = output.transpose(1, 2).reshape(batch_size, seq_len, self.embed_dim)
+        output = self.out_proj(output)
 
         return output, past_kv

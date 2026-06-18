@@ -1,41 +1,50 @@
+import math
+
 import torch
 import torch.nn as nn
-import math
 
 """
 SelfAttention
-实现一个SelfAttention层，输入是[B, L, d_model]，输出是[B, L, d_model]，其中B是Batch Size，L是Sequence Length，d_model是Embedding Dimension。
-其中，SelfAttention的公式为：
-Q = x @ W_q
-K = x @ W_k
-V = x @ W_v
+实现一个 SelfAttention 层，输入是 [batch_size, seq_len, embed_dim]，
+输出是 [batch_size, seq_len, value_dim]。
 
-scores = Q @ K.T / sqrt(d_k)
+q = q_proj(x)
+k = k_proj(x)
+v = v_proj(x)
+
+scores = q @ k.T / sqrt(key_dim)
 attn = softmax(scores)
-output = attn @ V
+output = attn @ v
+
 注：
-1. 这里实现的是Encoder self-attention，没有causal mask
-2. d_k和d_v一般是相等的；在MHA里，一般n*d_k=d_model（n是头数）
+1. 这里实现的是 Encoder self-attention，没有 causal mask。
+2. key_dim 和 value_dim 在数学上可以不同；MHA/GQA/MQA 里通常都等于 head_dim。
 """
 
+
 class SelfAttention(nn.Module):
-    def __init__(self, d_model, d_k, d_v):
+    def __init__(self, embed_dim, key_dim, value_dim):
         super().__init__()
-        # 这里需要特别注意，声明一个线性层的语法是nn.Linear(in_dim, out_dim)
-        # 而它对应的权重矩阵的维度是[out_dim, in_dim]，偏置项的维度是[out_dim]
-        self.W_q = nn.Linear(d_model, d_k, bias=False) # bias=False的意思是，y=x@W.T+b中，不加偏置项b，只有y=x@W.T，更符合论文中的公式
-        self.W_k = nn.Linear(d_model, d_k, bias=False)
-        self.W_v = nn.Linear(d_model, d_v, bias=False)
-    
+        self.embed_dim = embed_dim
+
+        # nn.Linear(in_dim, out_dim) 的权重矩阵维度是 [out_dim, in_dim]。
+        self.q_proj = nn.Linear(embed_dim, key_dim, bias=False)
+        self.k_proj = nn.Linear(embed_dim, key_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dim, value_dim, bias=False)
+
     def forward(self, x):
         """
-        x: [B, L, d_model]
+        x: [batch_size, seq_len, embed_dim]
         """
-        Q = self.W_q(x)     # Q: [B, L, d_k]
-        K = self.W_k(x)     # K: [B, L, d_k]
-        V = self.W_v(x)     # V: [B, L, d_v]
+        batch_size, seq_len, embed_dim = x.shape
+        assert embed_dim == self.embed_dim, "x.size(-1) 必须等于 embed_dim"
 
-        scores = Q @ K.transpose(-1, -2) / math.sqrt(K.size(-1))    # scores: [B, L, L]
-        attn = torch.softmax(scores, dim=-1)                        # attn: [B, L, L]
-        output = attn @ V                                           # output: [B, L, d_v]
+        q = self.q_proj(x)  # [batch_size, seq_len, key_dim]
+        k = self.k_proj(x)  # [batch_size, seq_len, key_dim]
+        v = self.v_proj(x)  # [batch_size, seq_len, value_dim]
+
+        scores = q @ k.transpose(-1, -2) / math.sqrt(k.size(-1))  # [batch_size, seq_len, seq_len]
+        attn = torch.softmax(scores, dim=-1)  # [batch_size, seq_len, seq_len]
+        output = attn @ v  # [batch_size, seq_len, value_dim]
+
         return output
