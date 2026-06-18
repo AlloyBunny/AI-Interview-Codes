@@ -5,7 +5,8 @@
 1. 标准化：BatchNorm、LayerNorm、RMSNorm
 2. 位置编码：RoPE、YaRN
 3. Attention：Self-Attention、MHA、MQA、GQA
-4. 机器学习：Sigmoid、Softmax、Kmeans、Dropout、Linear
+4. FFN: 标准FFN、SwiGLU FFN
+5. 机器学习：Sigmoid、Softmax、Kmeans、Dropout、Linear
 
 计划加入：
 

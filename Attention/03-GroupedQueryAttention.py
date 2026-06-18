@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
+# 架构图见 https://github.com/jingyaogong/minimind/blob/master/images/LLM-structure.jpg 的绿色块
 
 def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
     """
