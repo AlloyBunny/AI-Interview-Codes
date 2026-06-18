@@ -5,6 +5,10 @@ from typing import Optional, Tuple
 
 
 def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
+    """
+    x: [B, H, L, head_dim]
+    cos/sin: [L, head_dim // 2]
+    """
     x1 = x[..., 0::2]
     x2 = x[..., 1::2]
 
@@ -14,18 +18,6 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
     out[..., 1::2] = x1 * sin + x2 * cos
 
     return out
-
-
-def slice_rope(position_embedding: Tuple[torch.Tensor, torch.Tensor], start: int, length: int):
-    cos, sin = position_embedding
-
-    # 支持两种常见形状：
-    # 1) [max_len, head_dim // 2]
-    # 2) [1, max_len, head_dim // 2]
-    if cos.dim() >= 3 and cos.size(0) == 1:
-        return cos[:, start:start + length], sin[:, start:start + length]
-    return cos[start:start + length], sin[start:start + length]
-
 
 class GroupedQueryAttention(nn.Module):
     def __init__(self, d_model, num_heads, num_kv_heads, dropout=0.1):
@@ -60,9 +52,14 @@ class GroupedQueryAttention(nn.Module):
         ):
         """
         x: [B, L, d_model]
-        position_embedding: 一般为完整 RoPE 表，需要在这里根据 past_len 切片
+        position_embedding: Tuple[cos, sin]
+            - cos/sin: [max_len, head_dim // 2]
+            - 这里默认传入完整 RoPE 表，然后在 forward 里根据 past_len 切片
         past_kv: Optional[Tuple[K, V]]
             - K/V: [B, H_kv, past_len, head_dim]
+            - 是KV Cache
+        use_cache: bool
+            - 表示这次forward是否记录并返回 KV cache
         attn_mask: [B, total_len]
             - 1 表示有效 token
             - 0 表示 padding token
@@ -86,15 +83,16 @@ class GroupedQueryAttention(nn.Module):
         # 4) 对Q/K使用RoPE位置编码
         # 有 KV cache 时，当前 token 的位置不是从 0 开始，而是从 past_len 开始
         past_len = 0 if past_kv is None else past_kv[0].size(2)
-        cos, sin = slice_rope(position_embedding, past_len, L)
+        cos, sin = position_embedding
+        cos = cos[past_len:past_len + L]
+        sin = sin[past_len:past_len + L]
         Q = apply_rope(Q, cos, sin)
         K = apply_rope(K, cos, sin)
 
         if past_kv is not None:
-            K = torch.cat([past_kv[0], K], dim=2)  # 在序列长度维度上拼接
+            K = torch.cat([past_kv[0], K], dim=2)  # 在序列长度维度上拼接，此后K.size(2)就是total_len
             V = torch.cat([past_kv[1], V], dim=2)
-        present_kv = (K, V) if use_cache else None
-        total_len = K.size(2)
+        past_kv = (K, V) if use_cache else None
 
         # 5) 将每个 K/V head 复制给同一组里的多个 Q head
         # [B, H_kv, total_len, D] -> [B, H, total_len, D]
@@ -129,4 +127,4 @@ class GroupedQueryAttention(nn.Module):
         # 12) 输出投影（融合 multi-head 信息）
         output = self.W_o(output)
 
-        return output, present_kv
+        return output, past_kv
