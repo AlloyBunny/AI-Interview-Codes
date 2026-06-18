@@ -45,7 +45,7 @@ class GroupedQueryAttention(nn.Module):
         position_embedding: Tuple[torch.Tensor, torch.Tensor],
         past_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-        attn_mask: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
     ):
         """
         x: [batch_size, seq_len, embed_dim]
@@ -55,7 +55,7 @@ class GroupedQueryAttention(nn.Module):
             - k/v: [batch_size, num_kv_heads, past_len, head_dim]
         use_cache:
             - 是否返回新的 KV cache
-        attn_mask: [batch_size, total_len]
+        padding_mask: [batch_size, total_len]
             - 1 表示有效 token
             - 0 表示 padding token
         """
@@ -100,8 +100,17 @@ class GroupedQueryAttention(nn.Module):
         # scores: [batch_size, num_heads, seq_len, total_len]
         scores = q @ k.transpose(-1, -2) / math.sqrt(self.head_dim)
 
-        if attn_mask is not None:
-            scores = scores.masked_fill(attn_mask[:, None, None, :] == 0, float("-inf"))
+        # causal_mask: [seq_len, total_len]
+        # 第 i 个 query 对应的绝对位置是 past_len + i，
+        # 所以只能看见 key 里位置 <= past_len + i 的 token。
+        total_len = past_len + seq_len
+        scores = scores + torch.triu(
+            torch.full((seq_len, total_len), float("-inf"), device=scores.device),
+            diagonal=past_len + 1,
+        )[None, None, :, :]
+
+        if padding_mask is not None:
+            scores += (1.0 - padding_mask[:, None, None, :]) * -1e9
 
         attn = torch.softmax(scores, dim=-1)
         attn = self.attn_drop(attn)
@@ -112,3 +121,18 @@ class GroupedQueryAttention(nn.Module):
         output = self.o_proj(output)
 
         return output, past_kv
+
+"""
+补充讲解一下这里的causal mask，对于非方阵的triu，如果diagonal=0，它长这样：
+  [[-inf, -inf, -inf, -inf, -inf, -inf, -inf],
+   [   0, -inf, -inf, -inf, -inf, -inf, -inf],
+   [   0,    0, -inf, -inf, -inf, -inf, -inf],
+   [   0,    0,    0, -inf, -inf, -inf, -inf,]]
+  具体来说，diagonal=0就是从 (0,0) 位置往右下画线，画到哪算哪
+  代入我们的场景，这个例子相当于 total_len = 7, seq_len = 4
+  我们应该把对角线往右上移动 total_len-seq_len+1 格，即 past_len + 1 格，得到
+  [[   0,    0,    0,    0, -inf, -inf, -inf],
+   [   0,    0,    0,    0,    0, -inf, -inf],
+   [   0,    0,    0,    0,    0,    0, -inf],
+   [   0,    0,    0,    0,    0,    0,    0]]
+"""

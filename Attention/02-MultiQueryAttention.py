@@ -20,7 +20,7 @@ class MultiQueryAttention(nn.Module):
         self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.attn_drop = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
+    def forward(self, x: torch.Tensor, padding_mask: Optional[torch.Tensor] = None):
         batch_size, seq_len, embed_dim = x.shape
 
         q = self.q_proj(x)
@@ -40,8 +40,14 @@ class MultiQueryAttention(nn.Module):
         # scores: [batch_size, num_heads, seq_len, seq_len]
         scores = q @ k.transpose(-1,-2) / math.sqrt(self.head_dim)
 
-        if attn_mask is not None:
-            scores = scores.masked_fill(attn_mask[:, None, None, :]==0, float("-inf"))
+        # causal_mask
+        scores = scores + torch.triu(
+            torch.full((seq_len, seq_len),float('-inf'), device=scores.device), # 创造一个全是-inf的[seq_len, seq_len]矩阵
+            diagonal=1
+        )[None, None, :, :]
+
+        if padding_mask is not None:
+            scores += (1.0 - padding_mask[:, None, None, :]) * -1e9
 
         # attn: [batch_size, num_heads, seq_len, seq_len]
         attn = torch.softmax(scores, dim=-1)

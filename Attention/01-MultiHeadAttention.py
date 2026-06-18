@@ -20,10 +20,10 @@ class MultiHeadMaskedSelfAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(dropout)
 
-    def forward(self, x, attn_mask=None):
+    def forward(self, x, padding_mask=None):
         """
         x: [batch_size, seq_len, embed_dim]
-        attn_mask: [batch_size, seq_len]
+        padding_mask: [batch_size, seq_len]
             - 1 表示有效 token
             - 0 表示 padding token
         """
@@ -43,8 +43,16 @@ class MultiHeadMaskedSelfAttention(nn.Module):
 
         scores = q @ k.transpose(-1, -2) / math.sqrt(self.head_dim)  # [batch_size, num_heads, seq_len, seq_len]
 
-        if attn_mask is not None:
-            scores = scores.masked_fill(attn_mask[:, None, None, :] == 0, float("-inf"))
+        # causal_mask
+        scores = scores + torch.triu(
+            torch.full((seq_len, seq_len),float('-inf'), device=scores.device), # 创造一个全是-inf的[seq_len, seq_len]矩阵
+            diagonal=1
+        )[None, None, :, :]
+
+        if padding_mask is not None:
+            # 假设padding_mask的定义是：为0的位置是要mask掉的，1是保留的
+            # 下面这句等效于scores = scores.masked_fill(padding_mask[:, None, None, :] == 0, float("-inf"))
+            scores += (1.0 - padding_mask[:, None, None, :]) * -1e9
 
         attn = torch.softmax(scores, dim=-1)
         attn = self.attn_drop(attn)
